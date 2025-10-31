@@ -1,0 +1,640 @@
+---
+title: "model_03_UWTV_RandomStratified_Method"
+author: "Haleigh Joyce"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    number_sections: true
+    toc_depth: 3
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r libs, message=FALSE, echo=TRUE, warning=FALSE}
+gc()
+rm(list=ls())
+
+library(RODBC)
+library(tidyverse)
+library(lattice)
+library(lubridate)
+library(mapplots)
+library(sp)
+library(sf)
+library(reshape2)
+library(readxl)
+library(knitr)
+library(DataCombine)
+library(lattice)
+library(icesTAF)
+library(magrittr)
+library(viridis)
+library(sessioninfo)
+library(stringr)
+```
+
+# Setup options
+
+```{r setupoptions}
+curr.year <- 2025
+dat.year <- curr.year-1
+fu.n <- "FU17"
+
+save.plots <- F # set it up as T or F whether you want to save the plots when running all the chunks or kniting the document
+save.tables <- F # set it up as T or F whether you want to save the tables "propmature"" and the "L50" into .txt files when running all the chunks or knitting the document
+```
+
+# Introduction
+
+The goals of this R Markdown document are to:
+
+* Raise national lfd to the international landings and calculate fishery summary table.
+* Write TAF data tables
+
+Files before (inside "boot/data/UWTV"): 
+
+
+* GB.SH.finaldata.2025.csv 
+
+Files after (inside "model_03"): 
+
+* FU17_GB_SH_valid_stations.png 
+* FU17_GB_SH_density_bubble.png 
+* FU17_GB_SH_violin_plot_density.png 
+* FU17_GB_SH_violin_plot_counts.png 
+* FU17_GB_SH_violin_plot_dog.png" 
+* FU17_GB_SH_uncertainty_estimate.png 
+* FU17.total.abund.estimates.csv 
+* FU17_Number_UWTV_Stations.png 
+* FU17_Abundance_estimates.png 
+* FU17_aran_uncertainty_estimate.png 
+* FU17_meandensity.png 
+
+
+# Data Work Up
+
+<a href="#top">Back to top</a>
+
+The final result is the UWTV abundance estimates summary which forms part of the input data for generating catch advice in the Autumn.
+Outputs various report figures and tables.
+
+Marine Institute UWTV survey reports are available @ https://oar.marine.ie/handle/10793/1658.
+This survey is random stratified where survey sampling effort is stratified to survey area.
+The stock was benchmarked at WKCELT 2015 where the survey areas were defined.
+
+The Working Group on Nephrops Surveys (WGNEPS) is the international coordination group for Nephrops underwater television and trawl surveys within ICES @ https://www.ices.dk/community/groups/Pages/WGNEPS.aspx
+
+
+## Copy other data from bootstrap/initial/data/ 
+```{r copy_data , echo=TRUE, warning=FALSE, fig.height=8, fig.width=8}
+
+cp("boot/data/UWTV/GB.SH.finaldata.2025.csv", "model/UWTV/GB.SH.finaldata.2025.csv") #this comes from survey drive "Surveys/UWTV SURVEYS ARAN/2025 Aran Grounds/Kriging/FU17_GalwayBay_SlyneHead_Analysis_Data_Quality_Check.Rmd"
+
+```
+
+<a href="#top">Back to top</a>
+
+
+## Load UWTV survey data files 
+The final input data from 2013-2016 is calculated from the series of local MS Access queries refer to workup document on network drive UWTV_Survey_Analysis_DAta_QualityCheck.rmd. 
+The final input data for 2017 - 2018 is extracted from the sql server database (from dbo.Summary_FullWorkUp_Vw) where at WGNEPS 2017 a comparison of the local and sql server data extraction available in R markdown document was presented and accepted by the group. 
+The final input data since '2019' is extracted from the sql server database.
+In Autumn use the full view for all of this. 
+
+```{r load data, echo=TRUE, message=FALSE}
+fin <- read.csv("boot/data/UWTV/GB.SH.finaldata.2025.csv")
+fin <- fin[,-1]
+
+names(fin)[7] <-"Density"
+
+```
+
+## Data QC
+
+### Summary of data.
+<a href="#top">Back to top</a>
+
+```{r dat1, echo=TRUE, message=TRUE}
+summ <- fin %>% group_by(Year, Ground) %>% 
+      summarise(TotStations = length(Station),
+                TotCount = sum(Count_n),
+                TotDistance = sum(DoG_m),
+                AveDoG = mean(DoG_m),
+                AveDens.Adj = mean(Density))
+
+
+knitr::kable(summ, digits=3)
+
+
+zeros <- NULL
+for (i in unique(fin$Year)) {
+  cur <- subset(fin, Year == i) 
+  zer <- sum(cur$Count_n == 0)
+  zeros <- rbind(zeros, c(i, zer))  
+
+}
+
+zeros <- as.data.frame(zeros) 
+names(zeros) <- c("Year", "Zero.stations")
+zeros$Year <- as.numeric(zeros$Year)  # Ensure Year is numeric
+zeros <- zeros %>% arrange(Year)
+names(zeros) <- c("Year", "Zero.stations")
+
+knitr::kable(zeros, digits=3)
+```
+
+### Check number of stations due to multiple grounds and survey coverage.
+These should be 5 per ground in recent years.
+
+```{r dat2, echo=FALSE}
+
+table(fin$Year, fin$Ground)
+
+```
+
+### DOG source, FOV multiplier Check.
+Needs sql view check for WG2025
+
+```{r check, echo=FALSE}
+
+library(RODBC)
+channel <- odbcDriverConnect("Driver=SQL Server; Server=miprodsql-agl1; Database=FEAS_UWTV_Surveys; ")
+nep.all.sql <- sqlQuery(channel, "select * from dbo.UWTV_density_data_summary_Vw")
+close(channel)
+
+nep17GB <- subset(nep.all.sql,Ground=="Galway Bay")
+nep17SH <- subset(nep.all.sql,Ground=="Slyne Head")
+
+
+table(nep17GB$Year, nep17GB$DistanceSource, nep17GB$FOVMultiplier)
+table(nep17SH$Year, nep17SH$DistanceSource, nep17SH$FOVMultiplier)
+```
+<a href="#top">Back to top</a>
+
+### Check stations inside survey area polygons for inclusion in analysis
+As survey polygons were revised at IBPNeph 2014 the map below shows the stations that are included in the analysis.
+```{r mapcheck}
+
+dat <- fin
+FG <- st_read("boot/data/shp/Nephrops_grounds_all_area7.shp") 
+IRE <- st_read("boot/data/shp/eire.shp")
+
+#FG <- st_as_sf(FG)
+crs_shapefile <- st_crs(FG)
+dat <- st_as_sf(dat, coords = c("longitude", "latitude"), crs = crs_shapefile, remove = F)
+
+
+sf_use_s2(FALSE) # change to Flat Earth
+
+dat2 <- st_join(dat,FG)
+table(dat2$Ground.y)
+
+p <- ggplot() +
+  geom_sf(data=IRE, fill = "Light grey") +
+  geom_sf(data=FG, fill = "#006837") 
+
+bbox <- st_bbox(dat2) # lat long limits for plot
+
+p + geom_sf(data=dat2, aes(fill=Ground.y), shape=21) + 
+  coord_sf(xlim = c(bbox[1]-.05, bbox[3]+.05), ylim = c(bbox[2]-.10, bbox[4]+.10)) +
+  scale_fill_manual(values = c("lightblue", "yellow","green"), na.value="red") + 
+  facet_wrap(~Year, nrow=5)
+
+if (save.plots == T) {
+ggsave("model/model_03_UWTV_RandomStratified_Method/FU17_GB_SH_valid_stations.png")
+}
+
+```
+<a href="#top">Back to top</a>
+
+### Data object for assessment 
+
+```{r dat3, echo=FALSE, warning=FALSE, fig.height=9, fig.width=9, include=TRUE, results="hide"}
+
+FU17<-dat2[!is.na(dat2$Ground.y),] #removes rows where ground.y has NA 
+FU17 <- FU17[, c( "Year", "FU.x", "Survey", "longitude", "latitude", "density.unadj", "Density","DoG_m", "Area_m2", "Count_n", "Station", "DoGSource", "Status", "Ground.y", "Source", "Area_km2", "geometry")] 
+names(FU17)[names(FU17)=="FU.x"] <-"FU"
+names(FU17)[names(FU17)=="longitude"] <-"lon"
+names(FU17)[names(FU17)=="latitude"] <-"lat"
+names(FU17)[names(FU17)=="density.unadj"] <-"Densityunadj"
+names(FU17)[names(FU17)=="Ground.y"] <-"Ground"
+
+FU17 <- FU17 %>% filter(Ground != "Zero")
+unique(FU17$Ground)
+
+```
+
+### Bubble plot of adjusted densities over the time series
+
+```{r bubble, echo=FALSE, warning=FALSE, fig.height=9, fig.width=9, include=TRUE, results="hide"}
+
+c <- geom_point(data=FU17, aes(x=lon ,y=lat, size=Density, colour= Ground), shape =1) 
+
+bbox2 <- st_bbox(FU17) # lat long limits for plot
+
+bplot <- p + c +
+  coord_sf(xlim = c(bbox2[1]-.05, bbox2[3]+.05), ylim = c(bbox2[2]-.10, bbox2[4]+.10)) +
+  labs(y="Latitude",x="Longitude") +
+  facet_wrap(~Year,nrow=7) +
+  theme_bw()+
+scale_color_manual(values = c("Galway Bay" = "blue", "Slyne Head" = "red")) #defining colours of each Ground
+
+bplot + theme(strip.text.x = element_text(colour = "black", face = "bold", size = 10), 
+              strip.background = element_rect(colour = "black", fill = "white"),
+              axis.text = element_text(colour = "black", size = 7),
+              panel.spacing = unit(1, "lines"),
+              axis.title.x= element_text(size = 10),
+              axis.title.y = element_text(size = 10))
+
+if (save.plots == T) {
+ggsave("model/model_03_UWTV_RandomStratified_Method/FU17_GB_SH_density_bubble.png")
+}
+```
+
+<a href="#top">Back to top</a>
+
+### Violin and box plot of adjusted burrow density distributions by year from 2002-2025. 
+The blue line indicates the mean density over time.  
+The horizontal black line represents the median, white box is the inter quartile range, the black vertical line is the range and the black dots are outliers. 
+
+```{r vio ground, echo=FALSE, warning=FALSE, fig.height=9, fig.width=9, include=TRUE, results="hide"}
+
+ggplot(FU17,aes(x=as.factor(Year),y=Density))+ 
+  geom_violin(aes(group=Year,colour=Year,fill=Year),alpha=0.5, 
+              kernel="rectangular")+           # passes to stat_density, makes violin rectangular 
+  geom_boxplot(aes(group=Year), width=.2)+    
+  stat_summary(fun.y=mean, geom="line", colour="blue", aes(group=1)) +
+  xlab("\nYear")+                                # label one axis
+  ylab("Density burrow/m2\n")+                       # label the other
+  theme_bw()+                                  # make white background on plot
+  theme(legend.position = "none") +
+  facet_wrap(~Ground, nrow=2) +
+  theme(axis.text.x= element_text(angle = 0, size = 10), axis.text.y = element_text(angle = 0 ,size = 10))
+  
+if (save.plots == T) {
+ggsave("model/model_03_UWTV_RandomStratified_Method/FU17_GB_SH_violin_plot_density.png")
+}
+```
+
+
+
+### Violin and box plot a of burrow counts distributions by year from 2002-2025.
+
+The blue line indicates the mean burrow counts over time.  
+The horizontal black line represents the median, white box is the inter quartile range, the black vertical line is the range and the black dots are outliers. 
+ 
+```{r vio counts, echo=FALSE, warning=FALSE, fig.height=9, fig.width=9, include=TRUE, results="hide"}
+
+ggplot(FU17,aes(x=as.factor(Year),y=Count_n))+ 
+  geom_violin(aes(group=Year,colour=Year,fill=Year),alpha=0.5, 
+              kernel="rectangular")+           # passes to stat_density, makes violin rectangular 
+  geom_boxplot(aes(group=Year), width=.2)+    
+  stat_summary(fun.y=mean, geom="line", colour="blue", aes(group=1)) +
+  xlab("Year")+                                # label one axis
+  ylab("Burrow Counts")+                       # label the other
+  theme_bw()+                                  # make white background on plot
+  theme(legend.position = "none") +           # suppress legend
+  facet_wrap(~Ground, nrow=2) +
+  theme(axis.text.x= element_text(angle = 0, size = 10), axis.text.y = element_text(angle = 0, size = 10)) 
+
+if (save.plots == T) {
+ggsave("model/model_03_UWTV_RandomStratified_Method/FU17_GB_SH_violin_plot_counts.png")
+}
+
+```
+
+
+
+### Violin and box plot a of distance over ground distributions.
+By year from 2002-2025.
+The blue line indicates the mean distance over ground over time.  
+The horizontal black line represents the median, white box is the inter quartile range, the black vertical line is the range and the black dots are outliers. 
+There was no survey in 2022 for Slyne 
+```{r vio dog, echo=FALSE, warning=FALSE, fig.height=9, fig.width=9, include=TRUE, results="hide"}
+
+ggplot(FU17,aes(x=as.factor(Year),y=DoG_m))+ 
+  geom_violin(aes(group=Year,colour=Year,fill=Year),alpha=0.5, 
+              kernel="rectangular")+           # passes to stat_density, makes violin rectangular 
+  geom_boxplot(aes(group=Year), width=.2)+    
+  stat_summary(fun.y=mean, geom="line", colour="blue", aes(group=1)) +
+  xlab("Year")+                                # label one axis
+  ylab("Distance Over Ground (m)")+                       # label the other
+  theme_bw()+                                  # make white background on plot
+  theme(legend.position = "none") +
+  facet_wrap(~Ground, nrow=2)  +
+  theme(axis.text.x= element_text(angle = 90, size = 10), axis.text.y = element_text(angle = 90 ,size = 10))  
+
+if (save.plots == T) {
+ggsave("model/model_03_UWTV_RandomStratified_Method/FU17_GB_SH_violin_plot_dog.png")
+}
+```
+
+
+## Function Code UWTV Survey Summary Statistics
+<a href="#top">Back to top</a>
+
+Confidence interval multiplier for standard error
+Calculate t-statistic for confidence interval:  e.g., if conf.interval is .95 (above/below), and use df=N-1
+This gb.area differs from IBPNEPH 2015 report. 78.975
+```{r functioncode, echo=TRUE, message=TRUE, eval=TRUE}
+
+conf.interval <- 0.95
+
+gb.area <- FG$Area_km2[FG$Ground=="Galway Bay"] #Area taken from the shapefile
+sh.area <- FG$Area_km2[FG$Ground=="Slyne Head"]
+
+tot <- FU17 %>% group_by(Year,Ground) %>% 
+  summarise(mean = mean(Density),N = length(Density),sd = sd(Density)) %>% 
+  mutate(se=(sd/sqrt(N))) %>% 
+  mutate(ciMult=(qt(conf.interval/2 + .5, N-1))) %>% #==0.975
+  mutate(ci = (se * ciMult))
+
+tot$area <- NA
+tot$area <- ifelse(tot$Ground== c("Galway Bay"), gb.area, NA)
+tot$area <- ifelse(tot$Ground== c("Slyne Head"), sh.area, tot$area)
+tot$abund <- tot$mean * tot$area
+tot$upper <- tot$abund + (tot$ci * tot$area)
+tot$lower <- tot$abund - (tot$ci * tot$area)
+```
+
+###  Fillins missing Slyne years 2003+2008
+Here we replace the missing years with data from previous years.
+For missing year 2003 - WG agreed to take the averages of years 2002 and 2004 as a fill in.
+For missing year 2008 - WG agreed to take the averages of years 2007 and 2009 as a fill in.  
+
+```{r dat fillin, echo=TRUE, message=TRUE, fig.height=9, fig.width=9, include=TRUE, results="hide"}
+  ## mean     N    sd   geometry     se ciMult    ci  area abund upper lower##
+
+# take 2002 slyne head data and rename it 2003
+f03 <- (tot[2,3:13] + tot[5,3:13])/2 
+f03 <- c(2003, "Slyne Head", f03[,1], 0, 0, 0, 0, 0, 0, f03[,8], f03[,9], f03[,10],f03[,11]) 
+
+# take 2007 slyne head data and rename it 2008
+f08 <- (tot[11,3:13] + tot[14,3:13])/2 
+f08 <- c(2008, "Slyne Head", f08[,1], 0, 0, 0, 0, 0, 0, f08[,8], f08[,9], f08[,10],f08[,11]) 
+
+f <- as.data.frame(rbind(f03, f08))
+#rbind to keep formats numeric/character
+names(f) <- names(tot)
+
+# change the numeric assessors to colum names ## do this 
+f[, c(1, 3:13)] <- as.numeric(as.character(unlist(f[, c(1, 3:13)])))
+f[, 2] <- as.factor(as.character(unlist(f[, 2])))
+
+class(tot)
+
+tot <- as.data.frame(tot)
+total <- rbind(f,tot)
+total <- total[,!names(total) == "geometry"]
+
+ggplot(total, aes(x = Year, y = abund, colour = Ground)) + 
+  geom_line() + 
+  geom_point() + 
+  scale_color_manual(values = c("Galway Bay" = "blue", "Slyne Head" = "red")) +
+   scale_x_continuous(breaks = seq(min(total$Year), max(total$Year), by = 2)) + # Set breaks every 2 years
+   labs(x = "Year", y = "Abundance") +
+  theme_bw() +
+  theme(panel.grid = element_blank())
+    
+
+```
+
+### UWTV Survey Summary Statistics combined for all grounds
+<a href="#top">Back to top</a>
+
+## Read in Aran summary data 
+This is the output from the markdown document of 2025 krigging analysis for Aran grounds.
+##come back to here 
+```{r summ1, echo=FALSE, warning=FALSE, fig.height=9, fig.width=9, include=TRUE, results="hide"}
+
+#output from Rmd Kriging
+aran <- read.csv("model/model_02_UWTV_Kriging_Method_Aran/fu17.aran.uwtv.summary.statistics.adg.csv") #output from Rmd Kriging
+colnames(aran)
+colnames(total)
+
+rownames(total) <- NULL
+
+total$CViid <-NA
+total$meanGeo <-NA
+total$CVgeo <-NA
+total$method <-"random stratified"
+
+all.data <- rbind(total, aran)
+
+if (save.tables == T) {
+   write.csv(all.data, "FU17_uwtv_summary.csv", row.names=F)
+}
+
+g <-ggplot(all.data, aes(x=Year, y= abund, colour=Ground)) +
+  theme_bw() +
+  geom_errorbar(aes(ymax=upper, ymin=lower,width=0.2))+
+  geom_line(size = 1) +
+  geom_point(size = 0.2) +
+  theme_bw() +
+  scale_x_continuous(name = "\nYear",
+                       limits=c(min(all.data$Year)-0.2, max(all.data$Year)+0.2),
+                       breaks=seq(min(all.data$Year), max(all.data$Year), 2)) +
+  scale_y_continuous(name = "Abundance (millions)\n",
+                       limits=c(min(all.data$lower), max(all.data$upper)),
+                       breaks=seq(0, max(all.data$upper)+100, 100))
+
+bg <- g + scale_fill_discrete(guide = guide_legend(reverse=TRUE))
+bg +  theme(legend.position="top", panel.grid = element_blank()) +
+  geom_hline(yintercept = 0)
+
+if (save.plots == T) {
+ggsave("model/model_03_UWTV_RandomStratified_Method/FU17_grounds_abundances.png")
+}
+
+```
+
+###  Combined Abundance for input into Catch Scenarios for Nephrops ADG
+```{r tsum, echo=TRUE, message=TRUE,}
+
+tsum <- all.data %>% group_by(Year) %>%
+  summarise(abund = sum(abund), upper = sum(upper), lower = sum(lower))
+
+knitr::kable(tsum , digits=3)
+
+tsum[tsum$Year == 2022, c("abund", "upper", "lower")] <- NA # Survey not complete this year
+
+if (save.tables == T) {
+write.csv(tsum,"model/model_03_UWTV_RandomStratified_Method/FU17.total.abund.estimates.csv", row.names = F) 
+}
+```
+
+
+## Summary plots of the UWTV survey results over time.
+<a href="#top">Back to top</a>
+
+### Number of Stations completed
+<a href="#top">Back to top</a>
+
+```{r final_res1, echo=TRUE, message=TRUE,  fig.height=9, fig.width=9,eval=TRUE, fig.cap="Number of UWTV survey stations."}
+
+#Aggretage by year & grounds
+all.data1 <- all.data %>%
+  group_by(Year, Ground) %>%
+  summarise(N = sum(N, na.rm = TRUE))
+             
+
+ggplot(all.data1, aes(x=Year,y=N)) + 
+  geom_line(size=1) +  
+  geom_point() +  
+  theme_bw() +
+  facet_grid(~Ground) +
+    theme(panel.grid = element_blank()) +
+          scale_x_continuous(name="\nYear",
+                             breaks = seq(min(all.data$Year), max(all.data$Year), 4)) + 
+          scale_y_continuous(name = "Number of Stations \n",
+                             breaks = seq(0, max(all.data$N)+10, 10),
+                             limits = c(0, max(all.data$N)+10)) +
+    theme(panel.grid=element_blank(), legend.position = "bottom")  +
+          theme(legend.title=element_blank()) 
+
+
+if (save.plots == T) {
+  ggsave("model/model_03_UWTV_RandomStratified_Method/FU17_Number_UWTV_Stations.png")
+}
+
+```
+
+
+### Abundance estimate (millions individuals)
+<a href="#top">Back to top</a>
+
+WKFMSY Btrigger estimated in 2016.
+
+```{r final_res2, echo=TRUE, message=TRUE, fig.height=9, fig.width=9, eval=TRUE, fig.cap="Abundance estimate (millions of individuals)."}
+
+
+# Extract the value 'MSY_Btrigger'
+btrig <- read_csv("boot/data/intercatch/MSY.nep.stocks.csv", show_col_types = FALSE)
+MSY_Btrigger <- btrig %>%
+  filter(`Stock code` == "nep-17") %>%
+  pull(MSY_Btrigger) %>%
+  gsub(",", "", .) %>%        # remove commas if present
+  as.numeric() # Convert to numeric if necessary
+
+  
+ ggplot(tsum, aes(x=Year, y= abund)) +
+          theme_bw() +
+          geom_errorbar(aes(ymax=upper, ymin=lower, width=0.25)) +
+          geom_line(size = 1) +
+          geom_point() +
+          theme(panel.grid = element_blank()) +
+          scale_x_continuous(name="\nYear",
+                             breaks = seq(min(tsum$Year,na.rm = TRUE), max(tsum$Year,na.rm = TRUE), 1)) +
+          scale_y_continuous(name = "Abundance (millions)\n",
+                             breaks = seq(0, max(tsum$upper,na.rm = TRUE)+400, 250),
+                             limits = c(0, max(tsum$lower,na.rm = TRUE)+400)) + 
+          geom_hline(aes(yintercept=MSY_Btrigger),colour="#990000",linetype="dashed",size = 0.9) 
+
+
+if (save.plots == T) {
+  ggsave("model/model_03_UWTV_RandomStratified_Method/FU17_Abundance_estimates.png")
+}
+
+```
+
+
+
+### Uncertainty estimate
+<a href="#top">Back to top</a>
+
+```{r final_res3, echo=TRUE, message=TRUE, fig.height=9, fig.width=9, eval=TRUE, height=2000, width=1500, res=200, fig.cap="Uncertainty estimate. Dashed line is 20% limit."}
+
+dp<-all.data %>% filter(Ground=="Aran")
+  ggplot(dp,aes(x=Year, y= CVgeo)) +
+          geom_line(size = 1) +
+          geom_point() +
+          theme_bw() +
+          geom_hline(aes(yintercept=0.20),colour="black",linetype="dashed",size = 0.5) +
+          scale_x_continuous(name="\nYear",
+                             breaks = seq(min(dp$Year), max(dp$Year), 2)) +
+          scale_y_continuous(name = "CV",
+                             breaks = seq(0, max(dp$CVgeo)+0.15, 0.03),
+                             limits = c(0, max(dp$CVgeo)+0.15))  +
+          theme(panel.grid=element_blank(), legend.position = "bottom")  +
+          theme(legend.title=element_blank())  
+
+
+if (save.plots == T) {
+  ggsave("model/model_03_UWTV_RandomStratified_Method/FU17_aran_uncertainty_estimate.png")
+}
+
+```
+
+### Uncertainty estimate GB & SH
+```{r final_res4, echo=TRUE, message=TRUE,  fig.height=9, fig.width=9, eval=TRUE, height=2000, width=1500, res=200, fig.cap="Uncertainty estimate. Dashed line is 20% limit."}
+
+dp<-all.data %>% filter(Ground !="Aran")
+  ggplot(dp,aes(x=Year, y= se)) +
+          geom_line(size = 1) +
+          geom_point() +
+          theme_bw() +
+    facet_wrap(~Ground)+
+          geom_hline(aes(yintercept=0.20),colour="black",linetype="dashed",size = 0.5) +
+          scale_x_continuous(name="\nYear",
+                             breaks = seq(min(dp$Year), max(dp$Year), 2)) +
+          scale_y_continuous(name = "CV",
+                             breaks = seq(0, max(dp$se)+0.25, 0.03),
+                             limits = c(0, max(dp$se)+0.25))  +
+          theme(panel.grid=element_blank(), legend.position = "bottom")  +
+          theme(legend.title=element_blank())  
+
+
+if (save.plots == T) {
+  ggsave("model/model_03_UWTV_RandomStratified_Method/FU17_SH_GB_uncertainty_estimate.png")
+}
+
+```
+
+
+### Mean Density estimate (burrow/m2)
+<a href="#top">Back to top</a>
+
+```{r final_res5, echo=TRUE, message=TRUE,  fig.height=9, fig.width=9, eval=TRUE, fig.cap="Mean density estimate (burrow/m2)."}
+
+  #png("model/model_02_kriging/FU17_UWTV Mean Density.png", height=2000, width=1500, res=200)  
+
+  ggplot(all.data, aes(x=Year, y= mean)) +
+          geom_line(size = 1) +
+          geom_point() +
+          theme_bw() +
+  facet_wrap(~Ground)+
+          scale_x_continuous(name="\nYear",
+                             breaks = seq(min(all.data$Year), max(all.data$Year), 5)) +
+          scale_y_continuous(name = "Mean Density (burrow/m-2)",
+                             breaks = seq(0, max(all.data$mean)+0.3, 0.1),
+                             limits = c(0, max(all.data$mean)+0.3))  +
+          theme(panel.grid=element_blank(), legend.position = "bottom")  +
+          theme(legend.title=element_blank())  
+
+
+if (save.plots == T) {
+  ggsave("model/model_03_UWTV_RandomStratified_Method/FU17_meandensity.png")
+}
+
+```
+<a href="#top">Back to top</a>
+
+
+## Session
+<a href="#top">Back to top</a>
+```{r info , echo=TRUE, warning=FALSE, fig.height=8, fig.width=8}
+session_info()
+
+```
+
+
+
+

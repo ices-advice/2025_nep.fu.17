@@ -1,0 +1,297 @@
+---
+title: "model_01_raising to international"
+author: "Haleigh Joyce"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    number_sections: true
+    toc_depth: 3
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r libs, message=FALSE, echo=TRUE, warning=FALSE}
+gc()
+rm(list=ls())
+
+library(RODBC)
+library(tidyverse)
+library(lattice)
+library(lubridate)
+library(mapplots)
+library(sp)
+library(sf)
+library(reshape2)
+library(readxl)
+library(knitr)
+library(DataCombine)
+library(lattice)
+library(icesTAF)
+library(magrittr)
+library(viridis)
+library(sessioninfo)
+library(stringr)
+```
+
+
+# Setup options
+
+```{r setupoptions}
+curr.year <- 2025
+dat.year <- curr.year -1
+fu.n <- "FU17"
+
+save.plots <- T # set it up as T or F whether you want to save the plots when running all the chunks or kniting the document
+save.tables <- T # set it up as T or F whether you want to save the tables "propmature"" and the "L50" into .txt files when running all the chunks or knitting the document
+
+# lfd plot
+source("boot/initial/functions/required.funcs.r")
+source("boot/initial/functions/ld1.plot.r")
+```
+
+# Introduction
+
+The goals of this R Markdown document are to:
+
+* Rasie national lfd to the international landings and calculate fishery summary table.
+* Write TAF data tables
+
+Files before (inside "data/intercatch"):
+
+* fu17.int.land.csv
+* NepLand.WGNEPH2025.csv
+* fu17.nat.qlfd.all.wg2025.csv
+
+Files after (inside "model_01"):
+
+* fu17.international_landings.csv
+* fu17.national_landings.csv
+* fu17_Int.lfd.png
+* fu17_meanld.csv
+* fu17_fishery_summary.csv
+* fu17_National_landings_qtr.png
+* fu17.int.qlfd.csv
+
+
+## National Landings Revisions.
+<a href="#top">Back to top</a>
+
+
+```{r nat land, echo=TRUE, message=FALSE, fig.height=7, fig.width=12, warning=FALSE, fig.cap="FU17 Irish  Landings (t) by quarter."}
+
+nat <- read.csv("boot/data/intercatch/NepLand_WGNEPH2025.csv")
+str(nat)
+nat$LiveWt <-as.numeric(as.character(nat$LiveWt))
+nat$LiveWtRaisedToDecs <-as.numeric(as.character(nat$LiveWtRaisedToDecs))
+aggregate(LiveWt/1000 ~ Year + FU, nat, sum)
+
+nat$Quarter <- as.factor(nat$Quarter)
+nat <- nat %>% filter(FU=='17')
+  
+ggplot(nat, aes(as.factor(Year), LiveWt/1000, fill=factor(Quarter))) + 
+  geom_bar(stat="identity", position= "stack") + 
+  theme_bw() + ylab("Landings (tonnes)") + 
+  #ylim(c(0,1500)) +
+  labs(fill = "Quarter") +
+  xlab("Year") +
+  theme(panel.grid.major=element_blank(), panel.grid.minor=element_blank())
+
+nl <- nat %>% group_by(Year, Quarter) %>% summarise(tot =sum(LiveWt)) 
+
+nl <- nl %>% spread( Quarter, -Year) 
+nl$Total<- rowSums(nl[,2:5], na.rm=TRUE)
+
+knitr::kable(nl , digits=2)
+
+
+if (save.plots == T) {
+  ggsave("model/model_01_raising_to_international/FU17_National_Landings_qtr.png")
+}
+
+ if (save.tables == T) {
+   write.csv(nl, "model/model_01_raising_to_international/fu17.national.landings.csv", row.names = F)
+   }
+
+```
+
+
+## InterNational Landings 
+<a href="#top">Back to top</a>
+
+```{r int land, echo=TRUE, fig.height=10, fig.width=10, message=FALSE, warning=FALSE, fig.cap="FU17 International Landings (t) ."}
+
+int.land <- read.csv("boot/data/intercatch/fu17.int.land.csv")
+
+knitr::kable(int.land , digits=3)
+
+int.land <- gather(int.land,"country", "landings",2:4) 
+
+pi <- ggplot(int.land, aes(Year, landings, fill=country)) + geom_bar(stat="identity", position= "stack") + 
+  theme_bw() + ylab("Landings in Tonnes") +
+  scale_fill_manual(breaks = c("France", "Ireland", "UK"),
+                     values=c("#56B4E9","#009E73", "#CC6666")) +
+  theme(panel.grid.major=element_blank(), panel.grid.minor=element_blank()) +
+  scale_x_continuous(breaks = c(seq(min(int.land$Year), max(int.land$Year), by = 5), max(int.land$Year))) +
+  scale_y_continuous(breaks = seq(0, 1500, 250))
+
+pi + theme(axis.text=element_text(size=12),axis.title=element_text(size=14),legend.text = element_text(size = 16),legend.title = element_text(size = 16)) 
+
+
+
+int.land <- int.land %>% mutate_all(funs(replace(., is.na(.), 0)))
+
+int <- int.land %>% group_by(Year) %>% summarise(total=sum(landings))
+names(int) <- c("year","total")
+int$year  <- as.numeric(int$year)
+
+if (save.plots == T) {
+  write.csv(int, "model/model_01_raising_to_international/fu17.international.landings.csv", row.names = F)
+}
+
+ if (save.tables == T) {
+   ggsave("model/model_01_raising_to_international/FU17_International_Landings.png", width = 12, height = 6, dpi = 300)
+   }
+
+```
+
+
+## Read in quarterly raised data from 01_FU17_Extraction_WGNEPH_2025.rmd
+<a href="#top">Back to top</a>
+
+```{r load data, include=FALSE}
+
+qlfd.wg <- read.csv("boot/data/intercatch/fu17.nat.qlfd.all.taf.2025.csv")
+```
+
+
+
+## Now the International Raising Factor
+<a href="#top">Back to top</a>
+
+Calculate annual raising factor.
+Plot proportions of Irish landings in the fishery.
+Create international raised data file.
+
+```{r raising int, echo=TRUE, warning=FALSE}
+int.dat <- qlfd.wg %>% group_by(year) %>% summarise(lan.wgt =sum(rlan.wt.r), dis.wgt =sum(rdis.wt.r))
+                                           
+int.dat <- left_join(int, int.dat, by="year")
+int.dat$rf2 <- with(int.dat, total/lan.wgt)   
+
+int.dat <- int.dat %>% mutate_all(funs(replace(., is.na(.), 0)))                
+
+ire <- int.dat %>% filter(year >='2008') %>% mutate(prop = lan.wgt/total)
+
+# proportion of irish landings
+ggplot(ire, aes(year, prop)) + geom_line() + theme_bw() +
+  coord_cartesian(ylim= c(0, 1), xlim=c(2008,dat.year)) 
+
+knitr::kable(ire , digits=3)
+
+dat <- left_join(qlfd.wg, int.dat, by="year")
+
+
+dat$rdis.num <- with(dat, rdis.n.r*rf2)
+dat$rlan.num <- with(dat, rlan.n.r*rf2)
+dat$rdis.wt <- with(dat, rdis.wt.r*rf2)
+dat$rlan.wt <- with(dat, rlan.wt.r*rf2)
+
+
+#check numbers
+check <- dat %>% group_by(year) %>% summarise(int.lan.num =sum(rlan.num), 
+                                      int.lan.wgt =sum(rlan.wt),
+                                      int.dis.num =sum(rdis.num),
+                                      int.dis.wgt =sum(rdis.wt))
+
+
+knitr::kable(check , digits=5)
+
+
+ if (save.tables == T) {
+   write.csv(dat, "model/model_01_raising_to_international/fu17.int.qlfd.csv",  sep=",", row.names = F)
+ }
+
+```
+
+## Plot the raised international length frequency data from the annual ogive method.
+<a href="#top">Back to top</a>
+
+Raised length frequency distributions and mean size displayed.
+```{r summary plot1, echo=FALSE, warning=FALSE, fig.height= 10, fig.width=8,fig.align='center', fig.cap="FU17 Raised LFD and mean size displayed where black line = mean size in landings and red line = mean size in discards."}
+
+rldf <- dat[c(2:5, 17:18)]
+
+rldf <- rldf %>% gather("type", "n",5:6)
+rldf$type <- ifelse(rldf$type=="rdis.num", "Discards", "Landings")
+rldf$col <- ifelse(rldf$type=="Landings","white","red")
+
+#ggplot(rldf , aes(x= cl, y= n, fill=type)) + geom_bar(stat="identity") + facet_grid(year~q)
+pm <- ggplot(rldf , aes(x= cl, y= n, fill=type)) + geom_bar(stat="identity") 
+rldf$cl.n <- rldf$cl*rldf$n
+#get mean for lfd
+vline.data <- rldf %>% group_by(year, sex, type)  %>% summarise(mean=sum(cl.n)/sum(n))
+
+
+ if (save.tables == T) {
+   write.csv(vline.data, "model/model_01_raising_to_international/fu17_meanld.csv",  sep=",", row.names = F)
+ }
+
+
+vline.l  <- subset(vline.data, type=="Landings")
+vline.d  <- subset(vline.data, type=="Discards")
+
+pm + facet_grid(year~sex) + 
+  theme(strip.text.y = element_text(size = 10)) +
+  scale_fill_manual(values=c("blue","grey")) +
+  geom_vline(aes(xintercept= vline.l$mean), vline.l, colour="black", linetype="solid") +
+  geom_vline(aes(xintercept= vline.d$mean), vline.l, colour="red", linetype="solid") +
+  theme_bw() 
+
+if (save.plots == T) {
+  ggsave("model/model_01_raising_to_international/fu17.Int.lfd.png", width=6)
+}
+
+
+```
+
+
+## Assessment Summary data table
+<a href="#top">Back to top</a>
+
+First calculate exploitation pattern.
+Landings and discards by weight (tonne) and number ('000s).
+Estimated mean weight (gr) in landings and discards.
+Discard rates by weight (tonne) and number ('000s) from the raised derived data using the annual discard ogive.
+Removals in number.
+Dead discard rate by weight (tonne) and number ('000s). 
+Proportion Removals retained by number ('000s).
+Discard survival estimated as 25%.
+```{r summary table}
+summ <- dat %>% group_by(year) %>% summarise(int.lan.num =sum(rlan.num)/1000, 
+                                              int.lan.wgt =sum(rlan.wt),
+                                              int.dis.num =sum(rdis.num)/1000,
+                                              int.dis.wgt =sum(rdis.wt))  %>%
+                                    mutate  (mw.lan = (int.lan.wgt/int.lan.num),
+                                             mw.dis = (int.dis.wgt/int.dis.num),
+                                             dis.rn = int.dis.num/(int.lan.num + int.dis.num),
+                                             dis.rw = int.dis.wgt/(int.lan.wgt + int.dis.wgt),
+                                             removals.n = (int.dis.num * 0.75 + int.lan.num),
+                                             dead.disc.r = 1-int.lan.num/removals.n,
+                                             dead.disc.wgt = int.dis.wgt * 0.75,
+                                             prop.removals.ret =int.lan.num/removals.n)
+
+
+knitr::kable(summ , digits=3)
+
+if (save.tables == T) {
+   write.csv(summ, "model/model_01_raising_to_international/fu17.fishery.summary.csv",  row.names = F)
+ }
+```
+<a href="#top">Back to top</a>
